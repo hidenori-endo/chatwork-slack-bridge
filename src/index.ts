@@ -38,7 +38,7 @@ async function pollChatworkAndForward(env: Env): Promise<void> {
     const existing = await env.KV.get(`cw:${msg.message_id}`);
     if (existing) continue;
 
-    const slackText = `*${msg.account.name}* (Chatwork):\n${msg.body}`;
+    const slackText = `<@U2L3A9NHG> *${msg.account.name}* (Chatwork):\n${msg.body}`;
     const slackTs = await postSlackMessage(env, slackText);
 
     // Store mapping: Chatwork message ID → Slack thread ts
@@ -59,19 +59,21 @@ async function handleSlackEvent(
   request: Request,
   env: Env
 ): Promise<Response> {
-  // Verify Slack signature
-  const isValid = await verifySlackRequest(request, env.SLACK_SIGNING_SECRET);
-  if (!isValid) {
-    return new Response("Invalid signature", { status: 401 });
-  }
+  // Clone request so we can read body twice (once for challenge check, once for verify)
+  const cloned = request.clone();
+  const body = (await cloned.json()) as SlackEvent;
 
-  const body = (await request.json()) as SlackEvent;
-
-  // Handle Slack URL verification challenge
+  // Handle Slack URL verification challenge (before signature verification)
   if (body.type === "url_verification") {
     return new Response(JSON.stringify({ challenge: body.challenge }), {
       headers: { "Content-Type": "application/json" },
     });
+  }
+
+  // Verify Slack signature for all other requests
+  const isValid = await verifySlackRequest(request, env.SLACK_SIGNING_SECRET);
+  if (!isValid) {
+    return new Response("Invalid signature", { status: 401 });
   }
 
   // Handle message events
