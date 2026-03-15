@@ -5,6 +5,8 @@ export interface Env {
   SLACK_BOT_TOKEN: string;
   SLACK_SIGNING_SECRET: string;
   SLACK_CHANNEL_ID: string;
+  SLACK_MENTION_USER_ID: string;
+  CHATWORK_SKIP_ACCOUNT_NAME?: string;
 }
 
 export interface ChatworkMessage {

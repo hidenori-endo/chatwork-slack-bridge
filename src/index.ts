@@ -5,6 +5,17 @@ import { postSlackMessage, verifySlackRequest } from "./slack";
 // Marker to identify messages posted by the bridge (avoid infinite loop)
 const BRIDGE_MARKER = "[bridge]";
 
+// Strip Chatwork-specific tags like [rp ...], [qt ...][/qt], [To:...], [info][/info], [piconname:...], etc.
+function stripChatworkTags(text: string): string {
+  return text
+    .replace(/\[rp[^\]]*\]/g, "")
+    .replace(/\[qt\][^]*?\[\/qt\]/g, "")
+    .replace(/\[(?:To|toall|piconname|picon):[^\]]*\]/g, "")
+    .replace(/\[\/?(info|title|code|hr)\]/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 export default {
   // HTTP handler: receives Slack events (replies)
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -28,17 +39,24 @@ export default {
 };
 
 async function pollChatworkAndForward(env: Env): Promise<void> {
+  console.log("pollChatworkAndForward: start");
   const messages = await fetchNewMessages(env);
+  console.log(`pollChatworkAndForward: fetched ${messages.length} messages`);
 
   for (const msg of messages) {
     // Skip messages posted by the bridge
     if (msg.body.startsWith(BRIDGE_MARKER)) continue;
 
+    // Skip own messages
+    if (env.CHATWORK_SKIP_ACCOUNT_NAME && msg.account.name === env.CHATWORK_SKIP_ACCOUNT_NAME) continue;
+
     // Check if already forwarded
     const existing = await env.KV.get(`cw:${msg.message_id}`);
     if (existing) continue;
 
-    const slackText = `<@U2L3A9NHG> *${msg.account.name}* (Chatwork):\n${msg.body}`;
+    const cleanBody = stripChatworkTags(msg.body);
+    if (!cleanBody) continue;
+    const slackText = `<@${env.SLACK_MENTION_USER_ID}> *${msg.account.name}* (Chatwork):\n${cleanBody}`;
     const slackTs = await postSlackMessage(env, slackText);
 
     // Store mapping: Chatwork message ID → Slack thread ts
@@ -80,17 +98,20 @@ async function handleSlackEvent(
   if (body.type === "event_callback" && body.event) {
     const event = body.event;
 
-    // Only handle thread replies in the target channel
     if (
       event.type === "message" &&
       event.channel === env.SLACK_CHANNEL_ID &&
-      event.thread_ts &&
       !event.bot_id // Ignore bot messages (prevents loop)
     ) {
-      // Find the original Chatwork message from the thread
-      const mappingJson = await env.KV.get(`slack:${event.thread_ts}`);
-      if (mappingJson) {
-        // Post reply to Chatwork
+      if (event.thread_ts) {
+        // Thread reply: forward to Chatwork if it's a bridged thread
+        const mappingJson = await env.KV.get(`slack:${event.thread_ts}`);
+        if (mappingJson) {
+          const replyBody = `${BRIDGE_MARKER} ${event.text}`;
+          await postChatworkMessage(env, replyBody);
+        }
+      } else {
+        // Direct channel message: forward to Chatwork
         const replyBody = `${BRIDGE_MARKER} ${event.text}`;
         await postChatworkMessage(env, replyBody);
       }
